@@ -8,14 +8,14 @@ MCP_SERVERS: Dict = {
         "url": f"http://127.0.0.1:{settings.mcp_travel_port}/mcp",
         "transport": "streamable_http"
     },
-    "productivity": {
-        "url": f"http://127.0.0.1:{settings.mcp_productivity_port}/mcp",
-        "transport": "streamable_http"    
-    },
     "comms": {
         "url": f"http://127.0.0.1:{settings.mcp_comms_port}/mcp",
         "transport": "streamable_http"
     },
+    "moodboard": {
+        "url": f"http://127.0.0.1:{settings.mcp_moodbboard_port}/mcp",
+        "transport": "streamable_http"
+    } 
 }
 
 _client: MultiServerMCPClient | None = None
