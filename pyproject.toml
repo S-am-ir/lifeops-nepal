@@ -13,8 +13,8 @@ dependencies = [
     "httpx>=0.28.0",
     "python-dotenv>=1.0.1",
     "aiosqlite>=0.20.0",              # for checkpoints
-    "google-auth-oauthlib>=1.2.1",   # calendar later
-    "notion-client>=2.2.1",           # productivity
+    "fal-client",
+    "amadeus"
 ]
 
 [tool.uv]
