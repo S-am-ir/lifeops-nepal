@@ -21,13 +21,18 @@ MCP_SERVERS: Dict = {
 _client: MultiServerMCPClient | None = None
 _tools: List[BaseTool] = []
 
-async def get_mcp_tools() -> List[BaseTool]:
+async def get_mcp_tools(servers: List[str] | None = None) -> List[BaseTool]:
     global _client, _tools
     if not _tools:
-        _client = MultiServerMCPClient(MCP_SERVERS)
+        target = {k: v for k, v in MCP_SERVERS.items() if servers is None or k in servers}
+        _client = MultiServerMCPClient(target)
         await _client.__aenter__()
         _tools = await _client.get_tools()
         print(f"[MCP] Loaded {len(_tools)} tools: {[t.name for t in _tools]}")
+    if servers:
+        # Filter the requested server tools if a subset was asked for 
+        return [t for t in _tools if any(s in t.name for s in servers)] 
+    
     return _tools
 
 async def reset_mcp_client():
