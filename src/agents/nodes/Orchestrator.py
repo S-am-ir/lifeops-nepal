@@ -1,101 +1,103 @@
 from typing import Literal
-from langchain_core.prompts import ChatPromptTemplate
-from src.config.settings import settings
 from langchain_groq import ChatGroq
-from src.agents.state import AgentState, IntentClassification, create_empty_travel_state
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from src.config.settings import settings
+from src.agents.state import AgentState, IntentClassification
 
-def get_llm():
-    """Get cofigured Groq LLM instance"""
+
+def get_classifier_llm():
+    """Gemini Flash for classification - flash and frugal"""
+    if settings.google_api_key:
+        return ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=settings.google_api_key.get_secret_value(),
+            temperature=0,
+        )
+    # Fallback to Groq if Google key not set
     return ChatGroq(
         model="llama-3.3-70b-versatile",
         temperature=0,
         api_key=settings.groq_token.get_secret_value() if settings.groq_token else None,
     )
 
+# System Prompt
 
-INTENT_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are an intent classifier for a life admin AI assistant.
+CLASSIFIER_SYSTEM = """You are an intent classifier for a personal life admin AI.
 
-Classify the user's query into ONE of these intents:
+Classify the latest user message into ONE of:
 
-1. **travel_planning**: User wants to plan/book a trip (flights, hotels, weather).
-   Examples: "Plan a trip to Pokhara", "Find me a flight to Delhi", "Weekend getaway under 30k"
+travel_planning — planning or researching trips, flights, hotels, weather, destination info,
+  packing advice, itineraries, "what to do in X", budget for travel.
+  Examples: "Plan a trip to Pokhara", "Flights KTM to DEL next Friday",
+            "What should I do in Kathmandu for 2 days?", "Is it rainy in Pokhara in March?"
 
-2. **reminder**: User wants to be reminded or notified about something.
-   Examples: "Remind me to call mom at 5pm", "Send me a notification tomorrow"
+reminder — user wants to be reminded, notified, or alerted at some time via WhatsApp.
+  Examples: "Remind me to call mom at 5pm", "Alert me tomorrow morning",
+            "Send me a message in 2 hours"
 
-3. **creative**: User wants creative content (images, ideas, moodboards).
-   Examples: "Generate a romantic dinner moodboard", "Create an image of mountains"
+creative — generating images, moodboards, visual concepts, aesthetic exploration.
+  Examples: "Generate a moodboard for a mountain trip", "Create an image of Pokhara at sunset"
 
-4. **unknown**: Query doesn't fit above categories or is unclear.
-   Examples: "Hello", "What can you do?", gibberish
+unknown — anything that doesn't fit the above, or is a greeting/meta question.
+  Examples: "Hi", "What can you do?", "Thanks"
 
-Respond ONLY with valid JSON matching this schema:
-{{
-    "intent": "travel_planning" | "reminder" | "creative"
+IMPORTANT: Look at the FULL conversation history for context. A short follow-up like
+"yes go ahead" or "what about hotels?" belongs to the same intent as the prior messages.
+
+Respond with valid JSON only:
+{
+    "intent": "travel_planning",
     "confidence": 0.95,
-     "reasoning": "Brief explanation"     
-}}"""),
-     ("user", "{query}")
-])
+    "reasoning": "User is asking about flights"
+}
+"""
 
-async def classify_intent_node(state: AgentState) -> AgentState:
-    """Classify user intent and initialize appropriate sub-state"""
+async def classify_intent_node(state: AgentState) -> dict:
+    """Classify user intent from latest message + conversation context."""
 
-    query = state["user_query"]
-
-    llm = get_llm()
-    chain = INTENT_PROMPT | llm.with_structured_output(IntentClassification)
+    messages = state.get("messages", [])
+    if not messages:
+        return {"intent": "unknown"}
+    
+    llm = get_classifier_llm()
+    structured_llm = llm.with_structured_output(IntentClassification)
 
     try:
-        result = await chain.ainvoke({"query": query})
-        intent = result.intent
-        reasoning = result.reasoning
-    except Exception as e:
-        print(f"[Orchestrator] Intent classification failed: {e}")
-        intent = "unknown"
-        reasoning = f"Classification error: {e}"
-
-    # Initilize sub-state
-    updates = {
-        "intent": intent
-    }
-
-    if intent == "travel_planning":
-        updates["travel_state"] = create_empty_travel_state
-    elif intent == "reminder":
-        updates["reminder_state"] ={}
-
-    print(f"[Orchestrator] Classified intent: {intent} ({reasoning})")
-
-    return updates
-
-def route_to_subgraph(state: AgentState) -> Literal["travel_graph", "reminder_graph", "creative_graph", "unknown_handler"]:
-    """Route to appropriate sub-graph based on classified intent
-    
-    This is a conditional edge function - it doesnt modify state but 
-    only returns the name of the next node to execute.
-
-    """
-    intent = state["intent"]
-
-    routing_map = {
-        "travel_planning": "travel_graph",
-        "reminder": "reminder_graph",
-        "creative": "creative_graph",
-        "unknown": "unknown_handler",
-    }
-
-    return routing_map.get(intent, "unknown_handler")
-
-async def unknown_handler_node(state: AgentState) -> AgentState:
-    """Handle queries that don't fit any intent."""
-    return {
-        "final_response": (
-            "I'm a life admin assistant specialized in:\n\n"
-            "• **Travel planning**: Flights, hotels, weather research\n"
-            "• **Reminders**: WhatsApp notifications & alerts\n"
-            "• **Creative**: Moodboards & AI images\n\n"
-            "Could you rephrase your request to match one of these?"
+        result: IntentClassification = await structured_llm.ainvoke(
+            [SystemMessage(content=CLASSIFIER_SYSTEM)] + messages
         )
+        intent = result.intent
+        print(f"[Orchestrator] Intent: {intent} ({result.confidence:.0%})")
+    except Exception as e:
+        print(f"[Orchestrator] Classification failed: {e}")
+        intent = "unknown"
+    
+    return {"intent": intent}
+
+# Router
+def route_to_agent(state: AgentState) -> Literal["travel_agent", "reminder_agent", "creative_agent", "unknown_handler"]:
+    """Conditional edge: route based on classified intent"""
+    return {
+        "travel_planning": "travel_agent",
+        "reminder": "reminder_agent",
+        "creative": "creative_agent",
+        "unknown": "unknown_handler"
+    }.get(state.get("intent", "unknown"), "unknown_handler")
+
+# Unknown handler
+async def unknown_handler_node(state: AgentState) -> dict:
+    """Friendly fallback for unrecognized queries"""
+
+    response = (
+        "I'm your personal life admin assistant. Here's what I can help with:\n\n"
+        "✈️  **Travel** — flights, hotels, weather, destination tips, itineraries\n"
+        "🔔  **Reminders** — send yourself a WhatsApp reminder at any time\n"
+        "🎨  **Creative** — AI moodboards and image generation\n\n"
+        "What would you like to do?"
+    )
+
+    return {
+        "message": [AIMessage(content=response)],
+        "final_response": response,
     }
