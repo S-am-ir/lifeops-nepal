@@ -41,6 +41,12 @@ class HotelOffer(BaseModel):
     address: str
     amenities: List[str] = Field(default_factory=List)
 
+class DestinationInfo(BaseModel):
+    query: str
+    results: List[dict]
+    source: str = "duckduckgo"
+
+
 def _duration_minutes(s: str) -> int:
     h = int(re.search(r"(\d+)H", s).group(1)) if "H" in s else 0
     m = int(re.search(r"(\d+)M", s).group(1)) if "M" in s else 0
@@ -214,6 +220,44 @@ async def search_hotels(city_code: str, checkin_date: str, checkout_date: str, a
     except Exception as e:
         return [{"error": str(e)}]
     
+@mcp.tools()
+async def search_destination_info(query: str) -> dict:
+    """Search the web for destination info, travel tips, places to visit, activities
+    
+    Use this for open-ended questions like(for e.g.):
+    - "What should I do in Pokhara?"
+    - "Best trekking routes in Annapurna region"
+    - "Restaurants near Lakeside Pokhara"
+    - "Is Lukla trek suitable for beginners?"
+
+    This is a web search - no IATA codes or structured data needed.
+
+    Args:
+        query: Natural language serach query. Be specific for better results.
+        E.g. "things to do in Pokhara Nepal 3 days" rather than just "Pokhara".
+    """
+    try:
+        from duckduckgo_search import DDGS
+
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=5):
+                results.append({
+                    "title": r.get("title", ""),
+                    "snippet": r.get("body", ""),
+                    "url": r.get("href", ""),
+                })
+        
+        return DestinationInfo(query=query, results=results).model_dump()
+    
+    except ImportError:
+        return {
+            "error": "duckduckgo-search package not installed."
+                     "Run: pip install duckduckgo-search --break-system-packages"
+        }
+    except Exception as e:
+        return {"error": str(e), "query": query}
+
 
 if __name__ == "__main__":
     print(f"[MCP Travel] running on port {settings.mcp_travel_port}")
